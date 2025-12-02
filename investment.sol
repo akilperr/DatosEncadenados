@@ -279,12 +279,6 @@ contract MiInversion {
 
     /**
      * @dev Un usuario compra acciones. El precio depende de la acción.
-     * Además se cobra una comisión según el nivel:
-     * - Nulo → 3 ETH
-     * - Basico → 2 ETH
-     * - Intermedio → 1 ETH
-     * - Avanzado → 0 ETH
-     *
      * Sólo puede comprar acciones enteras.
      */
     function comprar_acciones(string calldata accion) external payable {
@@ -293,17 +287,10 @@ contract MiInversion {
         Usuario storage user = Usuarios[msg.sender];
         uint256 precioAccion = Acciones[accion].precio_actual;
 
-        // Determinar comisión según suscripción
-        uint256 comision;
-        if (user.nivel == nivelSuscripcion.Nulo) comision = 3 ether;
-        else if (user.nivel == nivelSuscripcion.Basico) comision = 2 ether;
-        else if (user.nivel == nivelSuscripcion.Intermedio) comision = 1 ether;
-        else comision = 0;
+        require(msg.value >= precioAccion, "Dinero insuficiente para comprar 1 accion");
 
-        require(msg.value > comision, "Fondo insuficiente para pagar comision");
-
-        // Dinero restante para comprar acciones
-        uint256 disponible = msg.value - comision;
+        // Todo el dinero disponible es para comprar acciones
+        uint256 disponible = msg.value;
 
         // Cantidad entera posible
         uint256 cantidad = disponible / precioAccion;
@@ -312,14 +299,9 @@ contract MiInversion {
         uint256 gastado = cantidad * precioAccion;
         uint256 sobrante = disponible - gastado;
 
-        // Devolver sobras
+        // Devolver sobras si existen
         if (sobrante > 0) {
             require(payable(msg.sender).send(sobrante), "Fallo devolver sobras");
-        }
-
-        // Enviar comisión al owner
-        if (comision > 0) {
-            require(owner.send(comision), "Fallo pagar comision");
         }
 
         // Registrar compra
@@ -328,9 +310,9 @@ contract MiInversion {
         reg.CompraAccion_time = block.timestamp;
         reg.Cantidad_acciones += cantidad;
         reg.Cantidad_gastada += gastado;
-
         emit AccionComprada(msg.sender, accion, cantidad, gastado);
     }
+
 
     // ------------------------------------------------------------
     //                      VENTA DE ACCIONES
@@ -346,49 +328,81 @@ contract MiInversion {
     function vender_acciones(string calldata accion, uint256 cantidad) external {
         require(Acciones[accion].precio_actual > 0, "Accion no existe");
 
-        Usuario storage user = Usuarios[msg.sender];
-        Accion_Us storage reg = user.acciones_compradas[accion];
+        Accion_Us storage reg = Usuarios[msg.sender].acciones_compradas[accion];
 
         require(reg.Cantidad_acciones > 0, "No tienes esa accion");
         require(cantidad > 0, "Cantidad invalida");
         require(reg.Cantidad_acciones >= cantidad, "No suficiente cantidad");
 
-        // Comisión: 1 ETH por cada mes completo
-        uint256 meses = (block.timestamp - reg.CompraAccion_time) / (30 days);
-        uint256 comision = meses * 1 ether;
+        // -----------------------------------------------------
+        // 1. Determinar COMISION INICIAL según nivel
+        // -----------------------------------------------------
+        uint256 comisionInicial;
 
+        if (Usuarios[msg.sender].nivel == nivelSuscripcion.Nulo) comisionInicial = 5 ether;
+        else if (Usuarios[msg.sender].nivel == nivelSuscripcion.Basico) comisionInicial = 4 ether;
+        else if (Usuarios[msg.sender].nivel == nivelSuscripcion.Intermedio) comisionInicial = 3 ether;
+        else comisionInicial = 2 ether; // Avanzado
+
+        // -----------------------------------------------------
+        // 2. Calcular meses transcurridos desde compra
+        // -----------------------------------------------------
+        uint256 meses = (block.timestamp - reg.CompraAccion_time) / (30 days);
+
+        // Cada mes reduce la comisión en 0.1 ETH
+        // Comisión mínima = 1 ETH
+        uint256 comision;
+
+        if ((comisionInicial - (meses * 0.1 ether)) < 1) {
+            comision = 1 ether; // no puede bajar de 1
+        } else {
+            comision = comisionInicial - (meses * 0.1 ether);
+        }
+
+        // -----------------------------------------------------
+        // 3. Simulación de precio de venta
+        // -----------------------------------------------------
         uint256 precioBase = Acciones[accion].precio_actual;
 
-        // Random pseudo-seguro (NO usar en producción seria)
         uint256 rand = uint256(
             keccak256(abi.encodePacked(block.timestamp, msg.sender, precioBase))
         ) % 1000;
 
-        // Dar más probabilidad a 0.8–1.2 que a 0.1–3
         uint256 multiplicador;
-        if (rand < 600) multiplicador = 80 + (rand % 40);      // 0.8–1.2
-        else multiplicador = 10 + (rand % 290);               // 0.1–3.0
+        if (rand < 600) multiplicador = 80 + (rand % 40);  // 0.8–1.2
+        else multiplicador = 10 + (rand % 290);            // 0.1–3.0
 
-        // Calcular precio final simulado
-        uint256 baseMult = precioBase * multiplicador;
-        uint256 precioVenta = baseMult / 100;
-        if (baseMult % 100 != 0) precioVenta++;   // redondeo hacia arriba
+        uint256 bruto = precioBase * multiplicador;
+        uint256 precioVenta = bruto / 100;
+        if (bruto % 100 != 0) precioVenta++;
 
+        // -----------------------------------------------------
+        // 4. Calcular dinero total generado
+        // -----------------------------------------------------
         uint256 ganancias = precioVenta * cantidad;
 
-        // Ganancia después de comisiones
-        uint256 neto = (ganancias > comision) ? (ganancias - comision) : 0;
+        // -----------------------------------------------------
+        // 5. Aplicar comisión (máx puede comerlo todo)
+        // -----------------------------------------------------
+        uint256 neto = ganancias > comision ? ganancias - comision : 0;
 
-        // Pagar al usuario si queda algo
+        // -----------------------------------------------------
+        // 6. Pagar comisión al owner
+        // -----------------------------------------------------
+        require(owner.send(comision), "No se pudo pagar comision mantenimiento");
+
+        // -----------------------------------------------------
+        // 7. Pagar al usuario su ganancia neta
+        // -----------------------------------------------------
         if (neto > 0) {
-            require(payable(msg.sender).send(neto), "Fallo pagar venta");
+            require(payable(msg.sender).send(neto), "No se pudo enviar venta");
         }
 
-        // Actualizar registro
+        // -----------------------------------------------------
+        // 8. Actualizar registro del usuario
+        // -----------------------------------------------------
         reg.Cantidad_acciones -= cantidad;
-        reg.Cantidad_gastada -= reg.Cantidad_acciones*precioBase;
 
-        // Si ya no quedan acciones, limpiar datos
         if (reg.Cantidad_acciones == 0) {
             reg.accion = "";
             reg.CompraAccion_time = 0;
