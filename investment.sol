@@ -401,7 +401,9 @@ contract MiInversion {
         // -----------------------------------------------------
         // 8. Actualizar registro del usuario
         // -----------------------------------------------------
+        reg.Cantidad_gastada = (cantidad/reg.Cantidad_acciones)*reg.Cantidad_gastada;
         reg.Cantidad_acciones -= cantidad;
+        
 
         if (reg.Cantidad_acciones == 0) {
             reg.accion = "";
@@ -418,10 +420,7 @@ contract MiInversion {
     /**
      * @dev Devuelve información sobre una acción específica que el usuario posea.
      */
-    function ver_mi_accion(string calldata accion)
-        external
-        view
-        returns (
+    function ver_mi_accion(string calldata accion) external view returns (
             string memory nombre,
             uint256 fecha,
             uint256 cantidad,
